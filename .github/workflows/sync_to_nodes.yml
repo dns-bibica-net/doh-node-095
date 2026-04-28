@@ -28,28 +28,29 @@ jobs:
           PAT: ${{ secrets.SYNC_PAT }}
           PREFIX: "doh-node"
           COUNT: 100
-          CONCURRENCY: 15 # Increased concurrency for speed
+          CONCURRENCY: 20 # Increased concurrency for faster silent run
         run: |
           OWNER="${{ github.repository_owner }}"
+          RESULT_DIR="sync_results"
+          mkdir -p $RESULT_DIR
           
+          echo "Syncing $COUNT nodes in silence... Please wait."
+
           push_with_retry() {
             local repo=$1
             local url=$2
             local attempt=1
-            local max_attempts=3
             
-            while [ $attempt -le $max_attempts ]; do
-              echo "  [Attempt $attempt] Syncing $repo..."
-              if git push "$url" HEAD:main --force; then
-                echo "  [SUCCESS] $repo synchronized."
+            while [ $attempt -le 3 ]; do
+              if git push "$url" HEAD:main --force --quiet 2>/dev/null; then
+                touch "$RESULT_DIR/ok_$repo"
                 return 0
               else
-                echo "  [WARNING] $repo failed. Retrying in 2s..."
-                sleep 2
+                sleep 1
                 attempt=$((attempt + 1))
               fi
             done
-            echo "  [ERROR] $repo failed after $max_attempts attempts."
+            touch "$RESULT_DIR/fail_$repo"
             return 1
           }
 
@@ -57,17 +58,27 @@ jobs:
             REPO_NAME="${PREFIX}-${i}"
             REMOTE_URL="https://x-access-token:${PAT}@github.com/${OWNER}/${REPO_NAME}.git"
             
-            # Run push with retry in background
             push_with_retry "$REPO_NAME" "$REMOTE_URL" &
             
-            # Limit concurrency
             if [[ $(jobs -r | wc -l) -ge $CONCURRENCY ]]; then
               wait -n
             fi
           done
           
           wait
-          echo "All nodes sync process finished."
-
-
-
+          
+          OK_COUNT=$(find $RESULT_DIR -name "ok_*" | wc -l)
+          FAIL_COUNT=$(find $RESULT_DIR -name "fail_*" | wc -l)
+          
+          echo "======================================="
+          echo " SYNC SUMMARY:"
+          echo " - Total: $COUNT"
+          echo " - Success: $OK_COUNT"
+          echo " - Failed: $FAIL_COUNT"
+          echo "======================================="
+          
+          if [ $FAIL_COUNT -gt 0 ]; then
+            echo "List of failed repos:"
+            ls $RESULT_DIR/fail_* | sed 's/.*fail_//'
+            exit 1
+          fi
